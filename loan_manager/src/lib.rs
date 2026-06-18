@@ -1380,24 +1380,29 @@ impl LoanManager {
             .storage()
             .instance()
             .get(&DataKey::Token)
-            .expect("token not set");
+            .ok_or(LoanError::NotInitialized)?;
         let token_client = TokenClient::new(&env, &token);
-        token_client.transfer(&loan.borrower, &env.current_contract_address(), &amount);
-
-        let loan_key = DataKey::Loan(loan_id);
-        let mut loan: Loan = env
-            .storage()
-            .persistent()
-            .get(&loan_key)
-            .expect("loan not found");
 
         let updated_collateral = loan
             .collateral_amount
             .checked_add(amount)
-            .expect("collateral overflow");
+            .ok_or(LoanError::AmountTooLarge)?;
         loan.collateral_amount = updated_collateral;
         env.storage().persistent().set(&loan_key, &loan);
         Self::bump_persistent_ttl(&env, &loan_key);
+
+        // CEI: commit the updated loan state before the external token transfer.
+        token_client.transfer(&loan.borrower, &env.current_contract_address(), &amount);
+
+        // Re-validate after the external interaction with typed errors rather than panicking.
+        let stored_loan: Loan = env
+            .storage()
+            .persistent()
+            .get(&loan_key)
+            .ok_or(LoanError::LoanNotFound)?;
+        if stored_loan.status != LoanStatus::Approved {
+            return Err(LoanError::LoanNotActive);
+        }
 
         env.events().publish(
             (symbol_short!("ColDep"), loan_id, loan.borrower),

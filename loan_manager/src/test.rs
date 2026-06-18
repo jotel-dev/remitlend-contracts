@@ -3,7 +3,43 @@ use lending_pool::{LendingPool, LendingPoolClient};
 use remittance_nft::{RemittanceNFT, RemittanceNFTClient};
 use soroban_sdk::testutils::Ledger as _;
 use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
-use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, String};
+use soroban_sdk::{contract, contractclient, contractimpl, testutils::Address as _, Address, BytesN, Env, String, Symbol};
+
+#[contractclient(name = "MaliciousTokenClient")]
+pub trait MaliciousTokenInterface {
+    fn set_attack_target(env: Env, manager: Address, loan_id: u32);
+}
+
+#[contract]
+pub struct MaliciousToken;
+
+#[contractimpl]
+impl MaliciousToken {
+    pub fn set_attack_target(env: Env, manager: Address, loan_id: u32) {
+        env.storage()
+            .persistent()
+            .set(&Symbol::new(&env, "manager"), &manager);
+        env.storage()
+            .persistent()
+            .set(&Symbol::new(&env, "loan_id"), &loan_id);
+    }
+
+    pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
+        let manager: Address = env
+            .storage()
+            .persistent()
+            .get(&Symbol::new(&env, "manager"))
+            .unwrap();
+        let loan_id: u32 = env
+            .storage()
+            .persistent()
+            .get(&Symbol::new(&env, "loan_id"))
+            .unwrap();
+        env.as_contract(&manager, || {
+            env.storage().persistent().remove(&DataKey::Loan(loan_id));
+        });
+    }
+}
 
 fn setup_test<'a>(
     env: &Env,
@@ -1333,6 +1369,42 @@ fn test_deposit_collateral_and_auto_release_on_full_repayment() {
         token_client.balance(&borrower),
         borrower_balance_before_full_repay - 1_000 + 300
     );
+}
+
+#[test]
+fn test_deposit_collateral_rejects_loan_removed_during_token_transfer() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+
+    let (manager, nft_client, pool_client, _token_id, _token_admin) = setup_test(&env);
+    let borrower = Address::generate(&env);
+
+    let history_hash = BytesN::from_array(&env, &[0u8; 32]);
+    nft_client.mint(
+        &borrower,
+        &650,
+        &history_hash,
+        &String::from_str(&env, "ipfs://QmTest"),
+        &None,
+    );
+
+    let stellar_token = StellarAssetClient::new(&env, &token_id);
+    stellar_token.mint(&pool_client, &20_000);
+    stellar_token.mint(&borrower, &20_000);
+
+    let loan_id = manager.request_loan(&borrower, &1_000, &17280);
+    manager.approve_loan(&loan_id);
+
+    let malicious = env.register(MaliciousToken, ());
+    let malicious_client = MaliciousTokenClient::new(&env, &malicious);
+    malicious_client.set_attack_target(&manager.address, &loan_id);
+
+    env.as_contract(&manager.address, || {
+        env.storage().instance().set(&DataKey::Token, &malicious);
+    });
+
+    let result = manager.deposit_collateral(&loan_id, &300);
+    assert_eq!(result, Err(LoanError::LoanNotFound));
 }
 
 #[test]
