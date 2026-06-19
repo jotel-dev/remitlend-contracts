@@ -1146,6 +1146,8 @@ impl LoanManager {
         Ok(())
     }
 
+    /// Returns a projected (non-persisted) snapshot of the loan, including accrued interest and late fees up to the current ledger.
+    /// This state is NOT written back to storage. For the exact amount required to clear the debt, use `quote_total_debt`.
     pub fn get_loan(env: Env, loan_id: u32) -> Result<Loan, LoanError> {
         let loan_key = DataKey::Loan(loan_id);
         let mut loan: Loan = env
@@ -1156,6 +1158,20 @@ impl LoanManager {
         Self::bump_persistent_ttl(&env, &loan_key);
         let _ = Self::current_total_debt(&env, &mut loan)?;
         Ok(loan)
+    }
+
+    /// Returns the exact current total debt (principal + accrued interest + accrued late fee) for a loan.
+    /// This amount matches exactly what `repay` would charge at the current ledger.
+    pub fn quote_total_debt(env: Env, loan_id: u32) -> Result<i128, LoanError> {
+        let loan_key = DataKey::Loan(loan_id);
+        let mut loan: Loan = env
+            .storage()
+            .persistent()
+            .get(&loan_key)
+            .ok_or(LoanError::LoanNotFound)?;
+        Self::bump_persistent_ttl(&env, &loan_key);
+        let (total_debt, _) = Self::current_total_debt(&env, &mut loan)?;
+        Ok(total_debt)
     }
 
     pub fn repay(env: Env, borrower: Address, loan_id: u32, amount: i128) -> Result<(), LoanError> {

@@ -2837,6 +2837,54 @@ fn test_collateral_release_works_while_paused() {
     assert!(result.is_err());
 }
 
+#[test]
+fn test_quote_total_debt_matches_repay() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+
+    let (manager, nft_client, pool_client, token_id, _token_admin) = setup_test(&env);
+    let borrower = Address::generate(&env);
+
+    let history_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
+    nft_client.mint(
+        &borrower,
+        &600,
+        &history_hash,
+        &String::from_str(&env, "ipfs://QmTest"),
+        &None,
+    );
+
+    let stellar_token = StellarAssetClient::new(&env, &token_id);
+    stellar_token.mint(&pool_client, &10_000);
+    stellar_token.mint(&borrower, &10_000);
+
+    let loan_id = manager.request_loan(&borrower, &1000, &17280);
+    manager.approve_loan(&loan_id);
+
+    // Fast-forward so interest and late fees accrue
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + 20_000);
+
+    // Get the quote
+    let quoted_debt = manager.quote_total_debt(&loan_id);
+
+    // Check balance before repay
+    let token_client = TokenClient::new(&env, &token_id);
+    let balance_before = token_client.balance(&borrower);
+
+    // Repay the exact quoted amount
+    manager.repay(&borrower, &loan_id, &quoted_debt);
+
+    let balance_after = token_client.balance(&borrower);
+
+    // Balance should have decreased by exactly quoted_debt
+    assert_eq!(balance_before - balance_after, quoted_debt);
+
+    // Loan should be fully repaid
+    let loan_after = manager.get_loan(&loan_id);
+    assert_eq!(loan_after.status, LoanStatus::Repaid);
+}
+
 // ── BorrowerLoanCount decrement on cancel / reject (issue #16) ────────────────
 
 #[test]
