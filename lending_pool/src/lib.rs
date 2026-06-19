@@ -178,6 +178,17 @@ impl LendingPool {
 
     /// LP shares to mint for `amount` of deposited assets.
     ///
+    /// Minimum amount the very first depositor of a token pool must supply.
+    /// Combined with the explicit `shares_to_mint <= 0` revert this raises
+    /// the cost of the donation/inflation attack (issue #1) — an attacker
+    /// can no longer mint a single share for a tiny amount and then donate
+    /// tokens to make a later depositor's mint round to zero, because the
+    /// first deposit itself must be large enough to make any donation
+    /// economically irrational. Subsequent deposits are unaffected, so the
+    /// exact 1:1 exchange-rate math the rest of the contract relies on is
+    /// preserved.
+    const MINIMUM_INITIAL_DEPOSIT: i128 = 1_000;
+
     /// The first depositor always receives a 1-for-1 allocation.  Subsequent
     /// depositors receive `amount * total_shares / total_assets_before` so
     /// that the exchange rate is preserved and existing holders are not
@@ -201,11 +212,23 @@ impl LendingPool {
     ///
     /// Returns `shares * total_assets / total_shares`, which automatically
     /// includes any yield that has accumulated since the shares were minted.
-    fn calc_assets_to_redeem(shares: i128, total_assets: i128, cur_total_shares: i128) -> i128 {
+    /// Returns a typed `PoolError` instead of panicking on the zero-divisor
+    /// pathologies that would otherwise trap funds.
+    fn calc_assets_to_redeem(
+        shares: i128,
+        total_assets: i128,
+        cur_total_shares: i128,
+    ) -> Result<i128, PoolError> {
+        if cur_total_shares <= 0 {
+            return Err(PoolError::InvalidAmount);
+        }
+        if total_assets < 0 {
+            return Err(PoolError::InvalidAmount);
+        }
         shares
             .checked_mul(total_assets)
             .and_then(|v| v.checked_div(cur_total_shares))
-            .expect("share redeem overflow")
+            .ok_or(PoolError::InvalidAmount)
     }
 
     fn assert_withdrawal_cooldown_elapsed(env: &Env, provider: &Address, token: &Address) {
@@ -250,7 +273,7 @@ impl LendingPool {
 
         let cur_total_shares = Self::total_shares(env, token);
         let total_assets = Self::read_pool_balance(env, token);
-        let assets_to_return = Self::calc_assets_to_redeem(shares, total_assets, cur_total_shares);
+        let assets_to_return = Self::calc_assets_to_redeem(shares, total_assets, cur_total_shares)?;
 
         if assets_to_return <= 0 {
             return Err(PoolError::InvalidAmount);
@@ -446,6 +469,13 @@ impl LendingPool {
         let total_assets_before = Self::read_pool_balance(&env, &token);
         let cur_total_shares = Self::total_shares(&env, &token);
 
+        // Issue #1: first depositor must commit at least MINIMUM_INITIAL_DEPOSIT
+        // so the donation/inflation attack costs at least that much in real
+        // assets before it could move the share price.
+        if cur_total_shares == 0 && amount < Self::MINIMUM_INITIAL_DEPOSIT {
+            return Err(PoolError::InvalidAmount);
+        }
+
         let shares_to_mint =
             Self::calc_shares_to_mint(amount, total_assets_before, cur_total_shares);
         if shares_to_mint <= 0 {
@@ -523,7 +553,8 @@ impl LendingPool {
             shares,
             Self::read_pool_balance(&env, &token),
             cur_total_shares,
-        );
+        )
+        .unwrap_or(0);
         (shares, asset_value)
     }
 
@@ -542,6 +573,7 @@ impl LendingPool {
             Self::read_pool_balance(&env, &token),
             cur_total_shares,
         )
+        .unwrap_or(0)
     }
 
     /// Raw LP share balance for `provider` in the `token` pool.
