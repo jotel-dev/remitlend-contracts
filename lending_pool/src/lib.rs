@@ -20,6 +20,7 @@ pub enum PoolError {
     InvalidMaxPoolSize = 9,
     NoProposedAdmin = 10,
     CooldownTooLong = 11,
+    NotPaused = 12,
 }
 
 /// Storage keys.
@@ -223,12 +224,21 @@ impl LendingPool {
         }
     }
 
+    /// Burns `shares` for `provider` and transfers out the proportional
+    /// underlying assets, updating all pool accounting.
+    ///
+    /// This is the shared core of [`withdraw`](Self::withdraw) and
+    /// [`emergency_withdraw`](Self::emergency_withdraw); it performs **no**
+    /// pause or cooldown checks and emits **no** event. Callers are responsible
+    /// for enforcing the appropriate policy and emitting the event that
+    /// distinguishes a normal withdrawal from an emergency exit. On success it
+    /// returns the amount of underlying assets transferred to `provider`.
     fn redeem_shares(
         env: &Env,
         provider: &Address,
         token: &Address,
         shares: i128,
-    ) -> Result<(), PoolError> {
+    ) -> Result<i128, PoolError> {
         if shares <= 0 {
             return Err(PoolError::InvalidAmount);
         }
@@ -282,14 +292,7 @@ impl LendingPool {
             .set(&DataKey::TotalDeposits(token.clone()), &new_total_deposits);
 
         Self::bump_instance_ttl(env);
-        withdraw(
-            env,
-            provider.clone(),
-            token.clone(),
-            assets_to_return,
-            shares,
-        );
-        Ok(())
+        Ok(assets_to_return)
     }
 
     // ── Admin / lifecycle ─────────────────────────────────────────────────
@@ -574,9 +577,26 @@ impl LendingPool {
         provider.require_auth();
         Self::assert_not_paused(&env)?;
         Self::assert_withdrawal_cooldown_elapsed(&env, &provider, &token);
-        Self::redeem_shares(&env, &provider, &token, shares)
+        let assets = Self::redeem_shares(&env, &provider, &token, shares)?;
+        withdraw(&env, provider, token, assets, shares);
+        Ok(())
     }
 
+    /// Emergency exit that lets a provider redeem their LP shares **only while
+    /// the pool is paused**, bypassing the normal withdrawal cooldown.
+    ///
+    /// Policy: this function reverts with [`PoolError::NotPaused`] whenever the
+    /// pool is not paused, so it is unavailable during normal operation. Pausing
+    /// is an admin-only action ([`pause`](Self::pause)), so emergency exits can
+    /// only happen in an admin-declared emergency state.
+    ///
+    /// The cooldown is deliberately bypassed here. The cooldown is an
+    /// anti-gaming mechanism for *normal* operation; it must not trap depositors
+    /// in a paused pool. Because emergency exits are confined to the paused
+    /// state, they cannot be used to circumvent the cooldown during normal
+    /// operation. Each call emits a distinct [`EmergencyWithdraw`] event
+    /// (rather than the regular `Withdraw` event) so emergency exits are
+    /// auditable and separable from ordinary withdrawals.
     pub fn emergency_withdraw(
         env: Env,
         provider: Address,
@@ -584,7 +604,12 @@ impl LendingPool {
         shares: i128,
     ) -> Result<(), PoolError> {
         provider.require_auth();
-        Self::redeem_shares(&env, &provider, &token, shares)
+        if !Self::is_paused(env.clone()) {
+            return Err(PoolError::NotPaused);
+        }
+        let assets = Self::redeem_shares(&env, &provider, &token, shares)?;
+        emergency_withdraw(&env, provider, token, assets, shares);
+        Ok(())
     }
 
     // ── Queries ───────────────────────────────────────────────────────────
