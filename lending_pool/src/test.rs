@@ -254,7 +254,39 @@ fn test_set_withdrawal_cooldown_rejects_values_above_maximum() {
 }
 
 #[test]
-fn test_emergency_withdraw_bypasses_pause_and_cooldown() {
+fn test_emergency_withdraw_allowed_while_paused_bypasses_cooldown() {
+    // Documented policy: emergency_withdraw is permitted *only while the pool is
+    // paused*, and in that state it bypasses the withdrawal cooldown so
+    // depositors are never trapped in a paused pool.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let token_admin = Address::generate(&env);
+    let (token_id, stellar_asset_client, token_client) = create_token_contract(&env, &token_admin);
+
+    let pool_id = env.register(LendingPool, ());
+    let pool_client = LendingPoolClient::new(&env, &pool_id);
+    pool_client.initialize(&token_admin);
+    // A non-zero cooldown that has *not* elapsed: a normal withdraw would be
+    // blocked, but emergency_withdraw must still succeed while paused.
+    pool_client.set_withdrawal_cooldown(&100);
+
+    let provider = Address::generate(&env);
+    stellar_asset_client.mint(&provider, &5_000);
+    pool_client.deposit(&provider, &token_id, &1_500);
+
+    pool_client.pause();
+    pool_client.emergency_withdraw(&provider, &token_id, &1_500);
+
+    assert_eq!(token_client.balance(&provider), 5_000);
+    assert_eq!(token_client.balance(&pool_id), 0);
+}
+
+#[test]
+fn test_emergency_withdraw_rejected_when_not_paused() {
+    // Policy: outside the paused (emergency) state, emergency_withdraw is
+    // unavailable so it cannot be used to circumvent the cooldown during normal
+    // operation.
     let env = Env::default();
     env.mock_all_auths();
 
@@ -270,11 +302,46 @@ fn test_emergency_withdraw_bypasses_pause_and_cooldown() {
     stellar_asset_client.mint(&provider, &5_000);
     pool_client.deposit(&provider, &token_id, &1_500);
 
+    // Pool is not paused → emergency_withdraw must revert and move no funds.
+    let result = pool_client.try_emergency_withdraw(&provider, &token_id, &1_500);
+    assert_eq!(result, Err(Ok(crate::PoolError::NotPaused)));
+    assert_eq!(token_client.balance(&provider), 3_500);
+    assert_eq!(token_client.balance(&pool_id), 1_500);
+}
+
+#[test]
+fn test_emergency_withdraw_emits_distinct_event() {
+    // emergency_withdraw must emit an `EmergencyWithdraw` event (not the regular
+    // `Withdraw` event) so emergency exits are auditable.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let token_admin = Address::generate(&env);
+    let (token_id, stellar_asset_client, _token_client) = create_token_contract(&env, &token_admin);
+
+    let pool_id = env.register(LendingPool, ());
+    let pool_client = LendingPoolClient::new(&env, &pool_id);
+    pool_client.initialize(&token_admin);
+    pool_client.set_withdrawal_cooldown(&100);
+
+    let provider = Address::generate(&env);
+    stellar_asset_client.mint(&provider, &5_000);
+    pool_client.deposit(&provider, &token_id, &1_500);
+
     pool_client.pause();
     pool_client.emergency_withdraw(&provider, &token_id, &1_500);
 
-    assert_eq!(token_client.balance(&provider), 5_000);
-    assert_eq!(token_client.balance(&pool_id), 0);
+    let events = env.events().all();
+    let (_, topics, data) = events.get(events.len() - 1).unwrap();
+
+    // Topic 0 must be the distinct `EmergencyWithdraw` symbol.
+    let topic0 = soroban_sdk::Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+    assert_eq!(topic0, soroban_sdk::Symbol::new(&env, "EmergencyWithdraw"));
+
+    // Data carries (amount, shares_burned).
+    let data_vec = soroban_sdk::Vec::<i128>::try_from_val(&env, &data).unwrap();
+    assert_eq!(data_vec.get(0).unwrap(), 1_500i128);
+    assert_eq!(data_vec.get(1).unwrap(), 1_500i128);
 }
 
 // ── Deposit / Withdraw invariants ─────────────────────────────────────────────

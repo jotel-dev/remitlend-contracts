@@ -10,6 +10,20 @@ pub fn withdraw(env: &Env, provider: Address, token: Address, amount: i128, shar
     env.events().publish(topics, (amount, shares_burned));
 }
 
+/// Emitted by `emergency_withdraw` so emergency exits (which bypass the normal
+/// withdrawal cooldown while the pool is paused) are distinguishable in the
+/// event log from ordinary `Withdraw` events.
+pub fn emergency_withdraw(
+    env: &Env,
+    provider: Address,
+    token: Address,
+    amount: i128,
+    shares_burned: i128,
+) {
+    let topics = (Symbol::new(env, "EmergencyWithdraw"), provider, token);
+    env.events().publish(topics, (amount, shares_burned));
+}
+
 #[allow(dead_code)]
 pub fn yield_distributed(env: &Env, token: Address, amount: i128) {
     let topics = (Symbol::new(env, "YieldDistributed"), token);
