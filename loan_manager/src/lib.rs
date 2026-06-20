@@ -1392,7 +1392,7 @@ impl LoanManager {
         }
 
         let loan_key = DataKey::Loan(loan_id);
-        let loan: Loan = env
+        let mut loan: Loan = env
             .storage()
             .persistent()
             .get(&loan_key)
@@ -1444,7 +1444,7 @@ impl LoanManager {
         }
 
         env.events().publish(
-            (symbol_short!("ColDep"), loan_id, loan.borrower),
+            (symbol_short!("ColDep"), loan_id, stored_loan.borrower),
             updated_collateral,
         );
 
