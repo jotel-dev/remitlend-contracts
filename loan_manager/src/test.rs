@@ -3,17 +3,7 @@ use lending_pool::{LendingPool, LendingPoolClient};
 use remittance_nft::{RemittanceNFT, RemittanceNFTClient};
 use soroban_sdk::testutils::Ledger as _;
 use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
-use soroban_sdk::{
-    contract,
-    contractclient,
-    contractimpl,
-    testutils::Address as _,
-    Address,
-    BytesN,
-    Env,
-    String,
-    Symbol,
-};
+use soroban_sdk::{contract, contractclient, contractimpl, testutils::Address as _, Address, BytesN, Env, String, Symbol};
 
 #[contractclient(name = "MaliciousTokenClient")]
 pub trait MaliciousTokenInterface {
