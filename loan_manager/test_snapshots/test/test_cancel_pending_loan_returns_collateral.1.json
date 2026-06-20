@@ -88,6 +88,9 @@
                 {
                   "bytes": "0000000000000000000000000000000000000000000000000000000000000000"
                 },
+                {
+                  "string": "ipfs://QmTest"
+                },
                 "void"
               ]
             }
@@ -484,6 +487,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "metadata_uri"
+                      },
+                      "val": {
+                        "string": "ipfs://QmTest"
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "score"
                       },
                       "val": {
@@ -737,7 +748,7 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "u32": 1
+                  "u32": 0
                 }
               }
             },

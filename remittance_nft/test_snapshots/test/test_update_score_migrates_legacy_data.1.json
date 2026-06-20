@@ -172,6 +172,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "metadata_uri"
+                      },
+                      "val": {
+                        "string": ""
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "score"
                       },
                       "val": {

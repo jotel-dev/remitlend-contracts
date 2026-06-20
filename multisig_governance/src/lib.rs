@@ -10,13 +10,13 @@ use soroban_sdk::{
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 /// Minimum timelock: 24 hours. Cannot be overridden by the proposing admin.
-const MIN_TIMELOCK_SECONDS: u64 = 86_400;
+pub const MIN_TIMELOCK_SECONDS: u64 = 86_400;
 
 /// Maximum signers in a quorum — keeps storage and iteration bounded.
-const MAX_SIGNERS: u32 = 20;
+pub const MAX_SIGNERS: u32 = 20;
 
 /// Time-to-live for proposals before they expire (7 days in seconds).
-const PROPOSAL_TTL_SECONDS: u64 = 604_800;
+pub const PROPOSAL_TTL_SECONDS: u64 = 604_800;
 
 // ─── Storage keys ─────────────────────────────────────────────────────────────
 
@@ -27,7 +27,7 @@ const KEY_TARGET: Symbol = symbol_short!("TARGET");
 const KEY_LAST_CANCELLED_AT: Symbol = symbol_short!("CANCEL_AT");
 const KEY_PROPOSAL_COUNT: Symbol = symbol_short!("COUNT");
 
-const REPROPOSAL_COOLDOWN_SECONDS: u64 = 3600; // 1 hour
+pub const REPROPOSAL_COOLDOWN_SECONDS: u64 = 3600; // 1 hour
 const CURRENT_VERSION: u32 = 1;
 
 // ─── Types ────────────────────────────────────────────────────────────────────

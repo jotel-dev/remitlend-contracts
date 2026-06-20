@@ -1,0 +1,9 @@
+# Build artifacts
+target/
+
+# Claude Code local project settings (permissions, etc.)
+.claude/
+
+# Docs
+plan.md
+CLAUDE.md

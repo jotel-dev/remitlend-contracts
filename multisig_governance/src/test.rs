@@ -2,8 +2,8 @@ use super::*;
 use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
 use soroban_sdk::{Address, BytesN, Env, Vec};
 
-//! Invariant: approval count is always derived from the current signer set,
-//! never from `approvals.len()` or any stale approvals stored in `PendingTransfer`.
+// Invariant: approval count is always derived from the current signer set,
+// never from `approvals.len()` or any stale approvals stored in `PendingTransfer`.
 #[allow(deprecated)]
 #[contract]
 pub struct MockTarget;

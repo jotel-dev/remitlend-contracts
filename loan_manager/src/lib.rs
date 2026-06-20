@@ -352,8 +352,16 @@ impl LoanManager {
             .and_then(|v| v.checked_mul(PRECISION))
             .ok_or(LoanError::AmountTooLarge)?;
 
+        // Issue #4: normalise by the loan's own term, not the contract-wide
+        // default — otherwise loans approved with a non-default term accrue
+        // interest at the wrong rate relative to their stated APR-over-term.
+        let term_ledgers = if loan.term_ledgers == 0 {
+            Self::DEFAULT_TERM_LEDGERS
+        } else {
+            loan.term_ledgers
+        };
         let denominator = 10_000i128
-            .checked_mul(Self::DEFAULT_TERM_LEDGERS as i128)
+            .checked_mul(term_ledgers as i128)
             .ok_or(LoanError::AmountTooLarge)?;
 
         let total_interest = numerator / denominator;
@@ -580,11 +588,18 @@ impl LoanManager {
         }
 
         let overdue_ledgers = current_ledger - late_fee_start;
+        // Issue #4: normalise by the loan's own term rather than the
+        // contract-wide default.
+        let term_ledgers = if loan.term_ledgers == 0 {
+            Self::DEFAULT_TERM_LEDGERS
+        } else {
+            loan.term_ledgers
+        };
         let incremental_fee = debt_before_late_fees
             .checked_mul(Self::late_fee_rate_bps(env) as i128)
             .and_then(|value| value.checked_mul(overdue_ledgers as i128))
             .and_then(|value| value.checked_div(10_000))
-            .and_then(|value| value.checked_div(Self::DEFAULT_TERM_LEDGERS as i128))
+            .and_then(|value| value.checked_div(term_ledgers as i128))
             .expect("late fee overflow");
 
         // Global debt cap: Total outstanding (principal + interest + late fees)
@@ -1100,7 +1115,15 @@ impl LoanManager {
             .instance()
             .get(&DataKey::Token)
             .expect("token not set");
-        let term_ledgers = Self::read_default_term(&env);
+        // Issue #5: honour the borrower-requested term that `request_loan`
+        // validated and stored on the loan, instead of overwriting it with the
+        // contract-wide default. Fall back to the default only when the
+        // stored field is 0 (legacy / unset loans).
+        let term_ledgers = if loan.term_ledgers == 0 {
+            Self::read_default_term(&env)
+        } else {
+            loan.term_ledgers
+        };
 
         // Cross-contract READ for liquidity check — still in the CHECKS phase.
         let pool_client = PoolClient::new(&env, &lending_pool);
@@ -1146,6 +1169,8 @@ impl LoanManager {
         Ok(())
     }
 
+    /// Returns a projected (non-persisted) snapshot of the loan, including accrued interest and late fees up to the current ledger.
+    /// This state is NOT written back to storage. For the exact amount required to clear the debt, use `quote_total_debt`.
     pub fn get_loan(env: Env, loan_id: u32) -> Result<Loan, LoanError> {
         let loan_key = DataKey::Loan(loan_id);
         let mut loan: Loan = env
@@ -1156,6 +1181,20 @@ impl LoanManager {
         Self::bump_persistent_ttl(&env, &loan_key);
         let _ = Self::current_total_debt(&env, &mut loan)?;
         Ok(loan)
+    }
+
+    /// Returns the exact current total debt (principal + accrued interest + accrued late fee) for a loan.
+    /// This amount matches exactly what `repay` would charge at the current ledger.
+    pub fn quote_total_debt(env: Env, loan_id: u32) -> Result<i128, LoanError> {
+        let loan_key = DataKey::Loan(loan_id);
+        let mut loan: Loan = env
+            .storage()
+            .persistent()
+            .get(&loan_key)
+            .ok_or(LoanError::LoanNotFound)?;
+        Self::bump_persistent_ttl(&env, &loan_key);
+        let (total_debt, _) = Self::current_total_debt(&env, &mut loan)?;
+        Ok(total_debt)
     }
 
     pub fn repay(env: Env, borrower: Address, loan_id: u32, amount: i128) -> Result<(), LoanError> {
@@ -1573,6 +1612,7 @@ impl LoanManager {
         loan.collateral_amount = 0;
         env.storage().persistent().set(&loan_key, &loan);
         Self::bump_persistent_ttl(&env, &loan_key);
+        Self::decrement_borrower_loan_count(&env, &borrower);
 
         if collateral_to_release > 0 {
             use soroban_sdk::token::TokenClient;
@@ -1615,6 +1655,7 @@ impl LoanManager {
         loan.collateral_amount = 0;
         env.storage().persistent().set(&loan_key, &loan);
         Self::bump_persistent_ttl(&env, &loan_key);
+        Self::decrement_borrower_loan_count(&env, &loan.borrower);
 
         if collateral_to_release > 0 {
             use soroban_sdk::token::TokenClient;

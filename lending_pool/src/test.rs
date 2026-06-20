@@ -254,7 +254,39 @@ fn test_set_withdrawal_cooldown_rejects_values_above_maximum() {
 }
 
 #[test]
-fn test_emergency_withdraw_bypasses_pause_and_cooldown() {
+fn test_emergency_withdraw_allowed_while_paused_bypasses_cooldown() {
+    // Documented policy: emergency_withdraw is permitted *only while the pool is
+    // paused*, and in that state it bypasses the withdrawal cooldown so
+    // depositors are never trapped in a paused pool.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let token_admin = Address::generate(&env);
+    let (token_id, stellar_asset_client, token_client) = create_token_contract(&env, &token_admin);
+
+    let pool_id = env.register(LendingPool, ());
+    let pool_client = LendingPoolClient::new(&env, &pool_id);
+    pool_client.initialize(&token_admin);
+    // A non-zero cooldown that has *not* elapsed: a normal withdraw would be
+    // blocked, but emergency_withdraw must still succeed while paused.
+    pool_client.set_withdrawal_cooldown(&100);
+
+    let provider = Address::generate(&env);
+    stellar_asset_client.mint(&provider, &5_000);
+    pool_client.deposit(&provider, &token_id, &1_500);
+
+    pool_client.pause();
+    pool_client.emergency_withdraw(&provider, &token_id, &1_500);
+
+    assert_eq!(token_client.balance(&provider), 5_000);
+    assert_eq!(token_client.balance(&pool_id), 0);
+}
+
+#[test]
+fn test_emergency_withdraw_rejected_when_not_paused() {
+    // Policy: outside the paused (emergency) state, emergency_withdraw is
+    // unavailable so it cannot be used to circumvent the cooldown during normal
+    // operation.
     let env = Env::default();
     env.mock_all_auths();
 
@@ -270,22 +302,60 @@ fn test_emergency_withdraw_bypasses_pause_and_cooldown() {
     stellar_asset_client.mint(&provider, &5_000);
     pool_client.deposit(&provider, &token_id, &1_500);
 
+    // Pool is not paused → emergency_withdraw must revert and move no funds.
+    let result = pool_client.try_emergency_withdraw(&provider, &token_id, &1_500);
+    assert_eq!(result, Err(Ok(crate::PoolError::NotPaused)));
+    assert_eq!(token_client.balance(&provider), 3_500);
+    assert_eq!(token_client.balance(&pool_id), 1_500);
+}
+
+#[test]
+fn test_emergency_withdraw_emits_distinct_event() {
+    // emergency_withdraw must emit an `EmergencyWithdraw` event (not the regular
+    // `Withdraw` event) so emergency exits are auditable.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let token_admin = Address::generate(&env);
+    let (token_id, stellar_asset_client, _token_client) = create_token_contract(&env, &token_admin);
+
+    let pool_id = env.register(LendingPool, ());
+    let pool_client = LendingPoolClient::new(&env, &pool_id);
+    pool_client.initialize(&token_admin);
+    pool_client.set_withdrawal_cooldown(&100);
+
+    let provider = Address::generate(&env);
+    stellar_asset_client.mint(&provider, &5_000);
+    pool_client.deposit(&provider, &token_id, &1_500);
+
     pool_client.pause();
     pool_client.emergency_withdraw(&provider, &token_id, &1_500);
 
-    assert_eq!(token_client.balance(&provider), 5_000);
-    assert_eq!(token_client.balance(&pool_id), 0);
+    let events = env.events().all();
+    let (_, topics, data) = events.get(events.len() - 1).unwrap();
+
+    // Topic 0 must be the distinct `EmergencyWithdraw` symbol.
+    let topic0 = soroban_sdk::Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+    assert_eq!(topic0, soroban_sdk::Symbol::new(&env, "EmergencyWithdraw"));
+
+    // Data carries (amount, shares_burned).
+    let data_vec = soroban_sdk::Vec::<i128>::try_from_val(&env, &data).unwrap();
+    assert_eq!(data_vec.get(0).unwrap(), 1_500i128);
+    assert_eq!(data_vec.get(1).unwrap(), 1_500i128);
 }
 
 // ── Deposit / Withdraw invariants ─────────────────────────────────────────────
 
 #[test]
 fn test_deposit_withdraw_invariants() {
+    // Issue #1: first depositor must commit at least MINIMUM_INITIAL_DEPOSIT
+    // (1_000), so the smaller-amount edge cases the old sweep used have been
+    // scaled up to keep exercising the share-math invariants without
+    // tripping the donation-attack guard.
     let scenarios: &[(i128, i128)] = &[
-        (1, 1),
-        (100, 1),
-        (100, 50),
-        (100, 100),
+        (1_000, 1_000),
+        (1_100, 1),
+        (1_500, 750),
         (3_000, 1_000),
         (10_000, 9_999),
     ];
@@ -396,28 +466,31 @@ fn test_pro_rata_yield_distribution_on_withdrawal() {
 
     let provider_a = Address::generate(&env);
     let provider_b = Address::generate(&env);
-    stellar_asset_client.mint(&provider_a, &1_000);
-    stellar_asset_client.mint(&provider_b, &1_000);
+    stellar_asset_client.mint(&provider_a, &10_000);
+    stellar_asset_client.mint(&provider_b, &10_000);
 
-    // provider_a: 600 shares (pool=600, total_shares=600).
-    pool_client.deposit(&provider_a, &token_id, &600);
-    // provider_b: shares = 400 * 600 / 600 = 400 (pool=1000, total_shares=1000).
-    pool_client.deposit(&provider_b, &token_id, &400);
+    // Issue #1: first depositor must meet MINIMUM_INITIAL_DEPOSIT (1_000), so
+    // the original 600 + 400 deposits were scaled up to 6_000 + 4_000 — same
+    // ratio, same arithmetic invariants on the share split.
+    // provider_a: 6_000 shares (pool=6_000, total_shares=6_000).
+    pool_client.deposit(&provider_a, &token_id, &6_000);
+    // provider_b: shares = 4_000 * 6_000 / 6_000 = 4_000 (pool=10_000, total_shares=10_000).
+    pool_client.deposit(&provider_b, &token_id, &4_000);
 
-    // 100 tokens of interest paid into pool.
-    stellar_asset_client.mint(&pool_id, &100);
-    // Pool: 1100 | Shares: 1000
+    // 1_000 tokens of interest paid into pool.
+    stellar_asset_client.mint(&pool_id, &1_000);
+    // Pool: 11_000 | Shares: 10_000
 
-    // provider_a redeems 600 shares: 600 * 1100 / 1000 = 660 tokens.
-    pool_client.withdraw(&provider_a, &token_id, &600);
+    // provider_a redeems 6_000 shares: 6_000 * 11_000 / 10_000 = 6_600 tokens.
+    pool_client.withdraw(&provider_a, &token_id, &6_000);
 
-    // provider_b redeems 400 shares: 400 * 440 / 400 = 440 tokens.
-    pool_client.withdraw(&provider_b, &token_id, &400);
+    // provider_b redeems 4_000 shares: 4_000 * 4_400 / 4_000 = 4_400 tokens.
+    pool_client.withdraw(&provider_b, &token_id, &4_000);
 
-    // provider_a: 400 (remaining wallet) + 660 (redeemed) = 1060.
-    assert_eq!(token_client.balance(&provider_a), 1_060);
-    // provider_b: 600 (remaining wallet) + 440 (redeemed) = 1040.
-    assert_eq!(token_client.balance(&provider_b), 1_040);
+    // provider_a: 4_000 (remaining wallet) + 6_600 (redeemed) = 10_600.
+    assert_eq!(token_client.balance(&provider_a), 10_600);
+    // provider_b: 6_000 (remaining wallet) + 4_400 (redeemed) = 10_400.
+    assert_eq!(token_client.balance(&provider_b), 10_400);
     assert_eq!(token_client.balance(&pool_id), 0);
 }
 
@@ -1371,4 +1444,63 @@ fn test_cap_below_current_deposits_blocks_deposits_but_allows_withdrawals() {
     // New deposit up to the cap should now succeed
     pool_client.deposit(&provider2, &token_id, &500);
     assert_eq!(pool_client.get_total_deposits(&token_id), 2_000);
+}
+
+// ── Issue #1: first-depositor inflation/donation attack regression ───────────
+
+#[test]
+fn test_donation_attack_does_not_zero_out_subsequent_depositor() {
+    // Attacker tries the classic ERC-4626 inflation attack: mint as little as
+    // possible, donate a large amount directly to the pool to push the share
+    // price up, then watch the victim's deposit either round to zero shares
+    // or net the attacker the victim's principal on redeem.
+    //
+    // With the MINIMUM_INITIAL_DEPOSIT guard (issue #1) the attacker can no
+    // longer mint a 1-share token-cost foothold — the first deposit of <1_000
+    // is rejected outright — and an honest second depositor receives fair
+    // shares that redeem back to (at least) their original principal.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let token_admin = Address::generate(&env);
+    let (token_id, stellar_asset_client, token_client) = create_token_contract(&env, &token_admin);
+
+    let pool_id = env.register(LendingPool, ());
+    let pool_client = LendingPoolClient::new(&env, &pool_id);
+    pool_client.initialize(&token_admin);
+    pool_client.set_withdrawal_cooldown(&0);
+
+    let attacker = Address::generate(&env);
+    let victim = Address::generate(&env);
+    stellar_asset_client.mint(&attacker, &1_000_000);
+    stellar_asset_client.mint(&victim, &1_000_000);
+
+    // The classic attack opens with a 1-stroop deposit — now rejected.
+    let result = pool_client.try_deposit(&attacker, &token_id, &1);
+    assert!(result.is_err(), "1-stroop first deposit must be rejected");
+
+    // The attacker is forced to commit at least MINIMUM_INITIAL_DEPOSIT.
+    pool_client.deposit(&attacker, &token_id, &1_000);
+    // Then donates 1_000_000 tokens directly to the contract to inflate
+    // the share price.
+    stellar_asset_client.mint(&pool_id, &1_000_000);
+
+    // Honest second depositor: with cur_total_shares = 1_000 and
+    // total_assets = 1_001_000, depositing 100_000 mints
+    //     100_000 * 1_000 / 1_001_000 ≈ 99 shares, not zero.
+    pool_client.deposit(&victim, &token_id, &100_000);
+    let victim_shares = pool_client.get_shares(&victim, &token_id);
+    assert!(
+        victim_shares > 0,
+        "honest second deposit must mint a non-zero share count"
+    );
+
+    // The victim can redeem their shares for ~their principal back — they
+    // are not wiped out, even though the attacker has poisoned the price.
+    pool_client.withdraw(&victim, &token_id, &victim_shares);
+    let victim_wallet = token_client.balance(&victim);
+    assert!(
+        victim_wallet >= 900_000 + (victim_shares * 1_001_000) / 1_000 - 5,
+        "victim should recover their share of the pool"
+    );
 }

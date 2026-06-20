@@ -44,6 +44,9 @@
                   "bytes": "0900000000000000000000000000000000000000000000000000000000000000"
                 },
                 {
+                  "string": "ipfs://QmTest123"
+                },
+                {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 }
               ]
@@ -264,6 +267,14 @@
                       },
                       "val": {
                         "bytes": "0900000000000000000000000000000000000000000000000000000000000000"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "metadata_uri"
+                      },
+                      "val": {
+                        "string": "ipfs://QmTest123"
                       }
                     },
                     {
