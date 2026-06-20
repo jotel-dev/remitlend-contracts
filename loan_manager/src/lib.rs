@@ -1115,7 +1115,15 @@ impl LoanManager {
             .instance()
             .get(&DataKey::Token)
             .expect("token not set");
-        let term_ledgers = Self::read_default_term(&env);
+        // Issue #5: honour the borrower-requested term that `request_loan`
+        // validated and stored on the loan, instead of overwriting it with the
+        // contract-wide default. Fall back to the default only when the
+        // stored field is 0 (legacy / unset loans).
+        let term_ledgers = if loan.term_ledgers == 0 {
+            Self::read_default_term(&env)
+        } else {
+            loan.term_ledgers
+        };
 
         // Cross-contract READ for liquidity check — still in the CHECKS phase.
         let pool_client = PoolClient::new(&env, &lending_pool);

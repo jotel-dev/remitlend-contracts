@@ -2987,3 +2987,48 @@ fn test_borrower_can_rerequest_after_cancel_and_reject_at_cap() {
     let loan_4 = client.get_loan(&loan_id_4);
     assert_eq!(loan_4.status, LoanStatus::Pending);
 }
+
+// ── Issue #5: approve_loan honours the borrower's requested term ─────────────
+
+#[test]
+fn test_approve_loan_uses_borrower_requested_term_not_default() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+
+    let (manager, nft_client, pool_client, token_id, _admin) = setup_test(&env);
+    let borrower = Address::generate(&env);
+
+    let history_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
+    nft_client.mint(
+        &borrower,
+        &600,
+        &history_hash,
+        &String::from_str(&env, "ipfs://QmTest"),
+        &None,
+    );
+
+    let stellar_token = StellarAssetClient::new(&env, &token_id);
+    stellar_token.mint(&pool_client, &10_000);
+
+    // Borrower requests a non-default term — half the contract's default.
+    let requested_term: u32 = 8_640;
+    let start_ledger = env.ledger().sequence();
+    let loan_id = manager.request_loan(&borrower, &1_000, &requested_term);
+
+    manager.approve_loan(&loan_id);
+
+    let loan = manager.get_loan(&loan_id);
+    assert_eq!(loan.status, LoanStatus::Approved);
+    // Issue #5: the approved loan's term and due_date must reflect the term
+    // the borrower actually requested, not the contract default that
+    // approve_loan was overwriting it with.
+    assert_eq!(
+        loan.term_ledgers, requested_term,
+        "approve_loan must keep the borrower-requested term"
+    );
+    assert_eq!(
+        loan.due_date,
+        start_ledger + requested_term,
+        "due_date must be derived from the borrower-requested term"
+    );
+}
