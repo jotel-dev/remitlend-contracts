@@ -4,14 +4,8 @@ use remittance_nft::{RemittanceNFT, RemittanceNFTClient};
 use soroban_sdk::testutils::Ledger as _;
 use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
 use soroban_sdk::{
-    contract, contractclient, contractimpl, testutils::Address as _, Address, BytesN, Env, String,
-    Symbol,
+    contract, contractimpl, testutils::Address as _, Address, BytesN, Env, String, Symbol,
 };
-
-#[contractclient(name = "MaliciousTokenClient")]
-pub trait MaliciousTokenInterface {
-    fn set_attack_target(env: Env, manager: Address, loan_id: u32);
-}
 
 #[contract]
 pub struct MaliciousToken;
@@ -27,7 +21,7 @@ impl MaliciousToken {
             .set(&Symbol::new(&env, "loan_id"), &loan_id);
     }
 
-    pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
+    pub fn transfer(env: Env, _from: Address, _to: Address, _amount: i128) {
         let manager: Address = env
             .storage()
             .persistent()
@@ -1379,7 +1373,7 @@ fn test_deposit_collateral_rejects_loan_removed_during_token_transfer() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
 
-    let (manager, nft_client, pool_client, _token_id, _token_admin) = setup_test(&env);
+    let (manager, nft_client, pool_client, token_id, _token_admin) = setup_test(&env);
     let borrower = Address::generate(&env);
 
     let history_hash = BytesN::from_array(&env, &[0u8; 32]);
@@ -1406,7 +1400,7 @@ fn test_deposit_collateral_rejects_loan_removed_during_token_transfer() {
         env.storage().instance().set(&DataKey::Token, &malicious);
     });
 
-    let result = manager.deposit_collateral(&loan_id, &300);
+    let result: Result<(), LoanError> = manager.try_deposit_collateral(&loan_id, &300);
     assert_eq!(result, Err(LoanError::LoanNotFound));
 }
 
