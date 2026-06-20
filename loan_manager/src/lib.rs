@@ -352,8 +352,16 @@ impl LoanManager {
             .and_then(|v| v.checked_mul(PRECISION))
             .ok_or(LoanError::AmountTooLarge)?;
 
+        // Issue #4: normalise by the loan's own term, not the contract-wide
+        // default — otherwise loans approved with a non-default term accrue
+        // interest at the wrong rate relative to their stated APR-over-term.
+        let term_ledgers = if loan.term_ledgers == 0 {
+            Self::DEFAULT_TERM_LEDGERS
+        } else {
+            loan.term_ledgers
+        };
         let denominator = 10_000i128
-            .checked_mul(Self::DEFAULT_TERM_LEDGERS as i128)
+            .checked_mul(term_ledgers as i128)
             .ok_or(LoanError::AmountTooLarge)?;
 
         let total_interest = numerator / denominator;
@@ -580,11 +588,18 @@ impl LoanManager {
         }
 
         let overdue_ledgers = current_ledger - late_fee_start;
+        // Issue #4: normalise by the loan's own term rather than the
+        // contract-wide default.
+        let term_ledgers = if loan.term_ledgers == 0 {
+            Self::DEFAULT_TERM_LEDGERS
+        } else {
+            loan.term_ledgers
+        };
         let incremental_fee = debt_before_late_fees
             .checked_mul(Self::late_fee_rate_bps(env) as i128)
             .and_then(|value| value.checked_mul(overdue_ledgers as i128))
             .and_then(|value| value.checked_div(10_000))
-            .and_then(|value| value.checked_div(Self::DEFAULT_TERM_LEDGERS as i128))
+            .and_then(|value| value.checked_div(term_ledgers as i128))
             .expect("late fee overflow");
 
         // Global debt cap: Total outstanding (principal + interest + late fees)
