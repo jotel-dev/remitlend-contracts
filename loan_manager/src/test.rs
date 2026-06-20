@@ -1400,8 +1400,8 @@ fn test_deposit_collateral_rejects_loan_removed_during_token_transfer() {
         env.storage().instance().set(&DataKey::Token, &malicious);
     });
 
-    let result: Result<(), LoanError> = manager.try_deposit_collateral(&loan_id, &300);
-    assert_eq!(result, Err(LoanError::LoanNotFound));
+    let result = manager.try_deposit_collateral(&loan_id, &300);
+    assert_eq!(result, Err(Ok(LoanError::LoanNotFound)));
 }
 
 #[test]
